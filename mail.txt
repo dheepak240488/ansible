@@ -1,0 +1,57 @@
+
+
+Is main.yml 
+
+post.yml reboot.yml validation.yml
+
+cat main.ymI
+
+  include: reboot.yml
+  include: post.yml
+  include: validation.yml 
+cat post.yml
+# Add list of sevices that you wish to start post reboot and script to start application post reboo
+＃Run post check script to gather system state and config
+# All the above will be executed only if server is registered and packages are found to update
+
+- name: Check if /tmp/postcheck exist then proceed postscript
+  stat: path=/tmp/postcheck 
+  register: postflag 
+  tags: postpatch
+
+- block:
+ 
+# Add list of services that you wish to start post reboot, you can also execute scripts to start application post reboot
+
+ - name: start monitoring service if not started ntp
+   service:
+    name: ntpd 
+    state: started 
+  ignore_errors: yes 
+  tags: postpatch
+
+  - name: Running mount -a 
+    shell: mount -a
+    ignore_ errors: yes 
+    tags: postpatch
+
+  - name: run post-check.sh after patching to capture data
+    script: /home/ansiadm/ansible-playbook/patching/files/post-check.sh
+    ignore_errors: yes
+    tags: postpatch
+  when: postflag.stat.exists
+
+rescue:
+
+  - name: Send mail to admin reporting postcheck or mount or ntp not working
+    mail:
+      host: "{{ relay_server }}"
+      port: 25
+      from: "{{ from_id }}"
+      to: "{{ mail_id }}"
+      subject: system {{ ansible_hosthanne }} postcheck or mount or ntp not working
+      body: system  {{ ansible_hosthanne }} postcheck or ntp not wokring, Perform post checks and deviation checks manually for this server. "
+    delegate_to: localhost
+
+
+

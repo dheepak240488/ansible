@@ -1,0 +1,90 @@
+report. ymI
+
+---
+- hosts: all 
+  become: yes 
+  vars:
+    mail_id: mail.com
+    relay_server: localhost
+
+  tasks:
+    - name: Empty file
+      local_action: file
+         path=/tmp/post-check.csv
+         state=absent
+      run_once: yes
+
+    - name: Updating Excel header 
+      lineinfile:
+        path: /tmp/post-check.csv
+        insertafter: BOF
+        line: "Name, IP Address,Operating systen, os vesion, kernel version, Date, Uptime, NTP"
+        create: yes
+        state: present
+        mode: 0777
+       connection: local
+       run_ once: yes
+    - name: Checking uptime
+      shell: uptime|sed `s/^.*up *//;s/ *[0-9]* user.*$/m/;s/ day[^0-9]*/d /;s/ \([hm]\).*$/\1/;s/:/h /;s/^/uptime
+      register: uptime_service_check
+
+    - name: Checking date 
+      shell: date
+      register: date_out
+
+    - name: collect facts about system services 
+      service_facts:
+      register: services_state
+    - name: Checking ntp service status 
+      shell: systemctl status ntpd 
+      ignore_errors: true 
+      register: result
+
+    - name: setting ntp running fact
+      set fact:
+        started: "Running"
+      register: status
+      when: result.stdout.find("running") != -1
+
+    - name: setting fact 
+      set fact:
+        started:"Stopped" 
+      register: status
+      when: result.stdout.find("running") == -1
+  
+    - name: ntp undefined
+      set fact:
+         started: "Undefined"
+      when: result is not defined 
+    
+    - set fact:
+        csv_data:"{{ inventory_hostname }},{{hostvars[inventory_ hostname][`ansible_ default_ipv4']['address'] }},{{lansible_distribution_version }}, {{ ansible_kernel }},{{date_out.stdout }},{{uptime_service_chēck.stdout }},{{started }}"
+
+    - name: Write to CSV 
+      throttle: 1 
+      lineinfile:
+        path: /tmp/post-check.osv
+        insertafter: EOF
+        line: "{{csv_data }}"
+        create: yes 
+        state: present 
+        mode: 0777
+      connection: local
+
+post tasks:
+    - name: Sending Mail 
+      mail:
+        host: localhost 
+        port: 25
+        subject: "Consolidated post Check Output" 
+        from: mail.com
+        to: mail.com
+        body:
+          "----------------Number of hosts {{ansible_play_hosts|length }} --------\n "
+        attach: /tmp/post-check.csv 
+      delegate_to: localhost
+      run_once: yes
+
+    - name: Display output over Portal
+      debug:
+        msg: "{{ inventory_hostname }}, {{uptime_service_check.stdout }}, {{ ansible_distribution_version }}, {{ ansible_kernel}} " 

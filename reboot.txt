@@ -1,0 +1,67 @@
+Reboot.yml
+
+
+
+cat reboot.yml
+
+# Update server
+＃Copy list of packages updated during patching in log file and copy the contents back to control node for any bau troubleshooting
+＃Reboot server post patching
+#Wait for server to boot up
+#All the above will be executed only if server is registered and packages are found to update
+
+- name: Check if /tmp/repoinfo-* file doesn't exist proceed patching
+  stat: path=/tmp/repoinfo-{{ inventory_hostname }}
+  register: repoinfo
+ 
+- name: remove file postcheck flag 
+  file:
+    path: /tmp/postcheck 
+    state: absent
+- block:
+  
+  - name: Find nfs mounts if present 
+    shell: df -hT grep -i nfs awk '{print $7}`
+    register: nfs_mount
+
+  - name: Umount nfs volumes if present
+   mount:
+      path: "{{item}}"
+      state: unmounted
+  with_items: "{{ nfs_mount.stdout_lines }}"
+
+  - name: Clean all yum data 
+    command: yum clean all 
+    args:
+      warn: yes
+
+  - name: check if flag is set for reboot when yum update success 
+    stat: path=/tmp/patching_success 
+    register: yumsuccess
+  
+  - name: rebooting server 
+    shell: sleep 5 & reboot 
+    async: 20
+    poll: 0 
+  when: yumsuccess. stat.exists
+
+  - name: Waiting for server to reboot 
+    wait_for_connection:
+      delay: 30
+      timeout: 500 
+    when: yumsuccess. stat.exists
+when: not repoinfo.stat.exists
+
+rescue:
+  - name: send mail to admin reporting patching and reboot not working
+    mail:
+       host: "{{ relay_server }}" 
+       port: 25
+       from: "{{ from_id }}" 
+       to: "{{ mail_id }}"
+       subject: System {{ ansible_hostname }} patching and reboot not working 
+       body:" System {{ ansible_hostname }} patching and reboot not working, check in console."
+    delegate_to: localhost 
+
+
+

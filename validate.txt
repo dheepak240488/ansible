@@ -1,0 +1,98 @@
+validation.yml
+cat validation.yml
+#As of now number of mount points and number of routes are checked post reboot you can add more checks in prepatch and postpatch script.
+  - name: check if /tmp/postcheck exists proceed validating pre and post script outputs 
+    stat: path=/tmp/postcheck 
+    register: postflag
+  - block:
+    - name: comparing pre and post patching info 
+      shell:
+      postmount=/tmp/patching-data/postpatch-'uname-n'-mount 
+      premount=/tmp/patching-data/prepatch-uname-n-mount 
+      postroute=/tmp/patching-data/postpatch-uname-n'-route 
+      preroute=/tmp/patching-data/prepatch-uname-n'-route 
+      dfusage=/tmp/patching-data/postpatch-'uname-n'-usage
+      [[ -f /tmp/patching-data/patchdiff]] && rm /tmp/patching-data/patchdiff 
+      if [[ -s $dfusage ]];then
+       touch /tmp/patching-data/patchdiff
+       echo "1. File system usage greater than 85%" >> /tmp/patching-data/patchdiff 
+       cat $dfusage >> /tmp/patching-data/patchdiff 
+       echo "" >> /tmp/patching-data/patchdiff
+      fi
+      [[ -f $dfusage ]l && rm $dfusage 
+      diff $postmount $premount 
+       if [[ $? != 0 J1; then
+        touch /tmp/patching-data/patchdiff
+        echo "2. Number of mount point is not matching post patching" >> /tmp/patching-data/patchdiff 
+        echo "" >> /tmp/patching-data/patchdiff
+       fi
+       [[ -f $postmount ]] && rm $postmount
+       [[ -f $premount ]] && rm $premount
+      ignore_errors: true 
+      tags: compare
+
+    - name: Check if /tmp/patching-data/patchdiff file exist when differention found 
+      stat: path=/tmp/patching-data/patchdiff 
+      register: patchdiff 
+      tags: compare
+  
+    - name: Remove the /tmp/patchdiff file 
+      local_action:
+       module: file 
+       path: /tmp/patchdiff 
+       state: absent 
+       run_once: True 
+       tags: compare
+
+    - name: Copy the /tmp/patching-data/patchdiff to /tmp/patchdiff 
+      fetch: src=/tmp/patching-data/patchdiffdest=/tmp/patchdiff 
+      when: patchdiff.stat.exists 
+      tags: compare
+
+    - name: Display here if any differention found from pre and post script outputs 
+      debug: msg="{{ lookup('file', "/tmp/patchdiff/{{ inventory_hostname }}/tmp/patching-data/patchdiff') }}"
+      when: patchdiff.stat.exists
+
+    - name: Checking ntp service status 
+      shell: systemctl status ntpd 
+      ignore_errors: true 
+      register: result
+
+    - name: setting ntp running fact 
+      set fact:
+        started: "Running" 
+      register: status
+      when: result.stdout.find("running") != -1
+  
+    - name: setting fact 
+      set_fact:
+        started: "Stopped" 
+      register: status
+      when: result.stdout.find("running") == -1
+
+    - name: Send mail to user with deviations found during checks 
+      mail:
+        host: "{{ relay_server }}" 
+        port: 25
+        to: "{{ mail id }}" 
+        from: "{{ from id }}"
+        subject: System {{ ansible_hostname }} has deviations 
+        body: "{{ lookup( `file', /tmp/patchdiff/{{ inventory_hostname }}/opt/patching-data/patchdiff') }}"
+      delegate to: localhost 
+      when: patchdiff.stat.exists 
+      tags: compare
+
+    -name: Send mail to user with success status
+     mail:
+        host: "{{ relay_server }}" 
+        port: 25
+        from: "{{ from_id }}" 
+        to: "{{ mail_id }}"
+        to: "Mail. Com”
+        subject: System {{ ansible_hostname }} update completed without ignore_errors
+        body: "System {{ ansible_distribution }} OS update completed without errors"
+      delegate_to: localhost
+      when: not patchdiff.stat.exists
+      tags: compare
+    when: postflag.stat.exists
+    
