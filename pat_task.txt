@@ -1,0 +1,119 @@
+ cd tasks/
+ ls -lrt
+total 12
+-rw-r--r--. 1 ansiadm unixadm   54 Mar  3  2020 main.yml
+-rw-r--r--. 1 ansiadm unixadm 2165 Dec  8  2021 precheck.yml
+-rw-r--r--. 1 ansiadm unixadm 1264 Dec  8  2021 patchcheck.yml
+ cat main.yml
+---
+- include: patchcheck.yml
+- include: precheck.yml
+
+
+ cat patchcheck.yml
+---
+- name: Register number of package listed for update
+  shell: |
+    yum list updates |egrep -v "redhat-release-server" | awk 'f;/Updated Packages|Available Upgrades/{f=1;}' | awk '{ print $1 }'|wc -l
+  ignore_errors: yes
+  register: packages
+  tags: pachk
+
+- name: Empty Files
+  shell: rm -f /tmp/security_success;rm -f /tmp/security_failure;rm -f /tmp/security_no_patch;rm -f /tmp/securityinfo-{{ inventory_hostname }}
+  tags: pachk
+
+
+- name: Touch file when no package found
+  shell: touch /tmp/security_no_patch
+  when: packages.stdout  == "0"
+  tags: pachk
+
+
+- name: Copy the number of package listed for update to ansible master
+  local_action:
+    module: copy
+    content: "{{ packages.stdout }}"
+    dest: /home/ansiadm/ansible-playbook/patching/security-log/repoinfo-{{ inventory_hostname }}.{{ansible_date_time.date}}.log
+  tags: pachk
+  when: packages.stdout != "0"
+
+#- name: remove old /tmp/securityinfo-servername
+#  file:
+#    path: /tmp/securityinfo-{{ inventory_hostname }}
+#   state: absent
+#  tags: pachk
+
+- name: Copy repo info to /tmp/securityinfo-servername when no packages found for update
+  copy:
+    dest: /tmp/securityinfo-{{ inventory_hostname }}
+    content: "{{ packages.stdout }}"
+  when: packages.stdout  == "0"
+  tags: pachk
+
+
+ cat precheck.yml
+#  Run pre check script to capture server state and config
+#  pre-check.sh will save output locally in client in path /tmp/patching-data/
+#  please read pre-check.sh to understand how it works
+#  Run pre check only if package is found for update
+
+- name: Check if /tmp/securityinfo-* file doesn't exist proceed running precheck script
+  stat: path=/tmp/securityinfo-{{ inventory_hostname }}
+  register: repoinfo
+  tags: prechecks
+
+
+- block:
+
+  - name: Run pre-check.sh before patching to capture data
+    script: /home/ansiadm/ansible-playbook/patching/files/pre-check.sh
+    ignore_errors: yes
+    tags: prechecks
+
+  - name: Capture prechecks output
+    shell: |
+      prechecks=/tmp/security-data/prepatch-`uname -n`
+      cat $prechecks
+      exit 0
+    register: precheck
+    tags: prechecks
+
+  - name: copy prechecks output back to ansible control node
+    local_action:
+      module: copy
+      content: "{{ precheck.stdout }}"
+      dest: /home/ansiadm/ansible-playbook/patching/security-log/precheck-{{ inventory_hostname }}.{{ansible_date_time.date}}.log
+    tags: prechecks
+
+  - name: "capture and report number of packages to update"
+    shell: yum list updates |egrep -v "redhat-release-server"| awk 'f;/Updated Packages|Available Upgrades/{f=1;}' | awk '{ print $1 }'
+    register: zyupnu
+
+
+  - name: "run yum security update script"
+    script: /home/ansiadm/ansible-playbook/patching/files/yumsecurityscript.sh
+    ignore_errors: yes
+    register: result
+
+
+  - name: Copy patch status info to ansible control node
+    local_action:
+      module: copy
+      content: "{{ result.stdout }}"
+      dest: /home/ansiadm/ansible-playbook/patching/security-log/patchstatus-{{ inventory_hostname }}.{{ansible_date_time.date}}.log
+
+
+  when: not repoinfo.stat.exists
+
+  rescue:
+
+    - name: Send mail to admin reporting pre-checks not work
+      mail:
+        host: "{{ relay_server }}"
+        port: 25
+        from: "{{ from_id }}"
+        to: "{{ mail_id }}"
+        subject: System {{ ansible_hostname }} pre checks not working
+        body: " System {{ ansible_hostname }} pre checks not working, Perform patching manually. "
+      delegate_to: localhost

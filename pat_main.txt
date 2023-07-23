@@ -1,0 +1,104 @@
+---
+  - hosts: all
+    become: yes
+    ignore_errors: yes
+    vars:
+      mail_id: mail.com
+      relay_server: localhost
+      from_id: mail.com
+    roles:
+      - { role: ubuntu, when: ( ansible_distribution == "Ubuntu" ) or
+                                  ( ansible_distribution == "Debian" ) }
+
+      - { role: redhat, when: ( ansible_distribution == "CentOS" ) or
+                                  ( ansible_distribution == "RedHat" ) }
+      - { role: suse, when: ( ansible_distribution == "SLES_SAP" ) or
+                                  ( ansible_distribution == "SLES" ) }
+
+    tasks:
+      - name: Empty file
+        local_action: file
+           path=/tmp/security_patch.csv
+           state=absent
+        run_once: yes
+
+      - name: Updating Excel header
+        lineinfile:
+          path: /tmp/security_patch.csv
+          insertafter: BOF
+          line: "Hostname,uptime,OS Vesion,kernel version,Date,Status"
+          create: yes
+          state: present
+          mode: 0777
+        connection: local
+        run_once: yes
+
+      - name: Checking uptime
+        shell: uptime|sed 's/^.*up *//;s/ *[0-9]* user.*$/m/;s/ day[^0-9]*/d /;s/ \([hm]\).*$/\1/;s/:/h /;s/^/Uptime:/'| sed 's/,//g'
+        register: uptime_service_check
+
+
+      - name: Checking date
+        shell: date
+        register: date_out
+
+      - stat:
+          path: /tmp/security_success
+        register: result
+
+      - stat:
+          path: /tmp/security_no_patch
+        register: nopatch
+
+      - set_fact:
+          status: "Patched"
+        when: result.stat.exists == true
+
+      - name: Patch  undefined
+        set_fact:
+          lifecycle: "Undefined"
+        when: result is not defined
+
+      - set_fact:
+          status: "No Updates Found"
+        when: result.stat.exists == false and nopatch.stat.exists == true
+
+      - set_fact:
+          status: "Not Patched"
+        when: result.stat.exists == false and nopatch.stat.exists == false
+
+
+      - set_fact:
+          csv_data: "{{ inventory_hostname }}, {{ uptime_service_check.stdout }}, {{ ansible_distribution_version }}, {{ ansible_kernel }}, {{ date_out.stdout }}, {{ status }}"
+
+      - name: Write to CSV
+        throttle: 1
+        lineinfile:
+          path: /tmp/security_patch.csv
+          insertafter: EOF
+          line: "{{ csv_data }}"
+          create: yes
+          state: present
+          mode: 0777
+        connection: local
+
+
+    post_tasks:
+      - name: Sending Mail
+        mail:
+          host: localhost
+          port: 25
+          subject: "Security Patch Output"
+          from: "{{ from_id }}"
+          to: "{{ mail_id }}"
+          body:
+            "--------------------------- Number of hosts {{ ansible_play_hosts|length }} -----------------\n "
+          attach: /tmp/security_patch.csv
+        delegate_to: localhost
+        run_once: yes
+
+      - name: Display output over Portal
+        debug:
+          msg: "{{ inventory_hostname }}, {{uptime_service_check.stdout}}, {{ ansible_distribution_version }}, {{ ansible_kernel }}, {{ date_out.stdout }}"
+
+
